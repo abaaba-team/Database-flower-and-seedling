@@ -17,7 +17,7 @@ def page_freezing_client():
     st.download_button(
         label="Download data as CSV",
         data=df.to_csv().encode('utf-8'),
-        file_name='fas.csv',
+        file_name='freezing_client.csv',
         mime='text/csv',
 
     )

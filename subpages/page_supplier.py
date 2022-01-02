@@ -16,7 +16,7 @@ def page_supplier():
     st.download_button(
         label="Download data as CSV",
         data=df.to_csv().encode('utf-8'),
-        file_name='fas.csv',
+        file_name='supplier.csv',
         mime='text/csv',
 
     )
