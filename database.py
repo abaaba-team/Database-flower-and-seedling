@@ -1,8 +1,20 @@
+import streamlit as st
+import altair as alt
 import pandas as pd
+import numpy as np
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
 import time #正规时间
+
 import re #正则match
+
+from PIL import Image
+
+from io import BytesIO
+
+
 # 初始化数据库连接
 USER = 'root'
 PASSWORD = 'abc'
@@ -28,6 +40,7 @@ def searchFASKindbyTag(tag:str, info):
 def addEntityForFASKind( name:str):
 #     依據參數上傳data
     df_write = pd.DataFrame({'FAS_name': [name]})
+    # df_write.to_sql('flower_and_seedling', engine, if_exists="append" ,index=False)
     try:
         df_write.to_sql('flower_and_seedling', engine, if_exists="append" ,index=False)
         return True
@@ -59,12 +72,12 @@ def addEntityForFAS( name:str, supplier:str, totalCount:float, unit:str, price:f
         addEntityForFASKind(name)
     fid = searchFASKindbyTag('FAS_name',name)['F_ID'][0]
 #     依據參數上傳data
-    df_write = pd.DataFrame({'F_ID':[fid], 'FAS_name': [name], 'S_name': [supplier], 'TotalCount': [totalCount],'Unit':[unit],'Price':[price],'Subtotal':[totalCount * price],'StoragePlace':[address],'PurchaseDate':[time.strftime("%Y-%m-%d", time.localtime())]})
+    df_write = pd.DataFrame({'F_ID':[fid], 'FAS_name': [name], 'S_name': [supplier], 'TotalCount': [totalCount],'Unit':[unit],'Price':[price],'Subtotal':[int(totalCount) * float(price)],'StoragePlace':[address],'PurchaseDate':[time.strftime("%Y-%m-%d", time.localtime())]})
     try:
         df_write.to_sql('supplier_relationship_with_flower', engine, if_exists="append" ,index=False)
         return True
-    except:
-        print("addEntity failed, please check you parameter or datatype")
+    except Exception as e:
+        print("addEntity failed, please check you parameter or datatype:" + str(e))
         return False
 # =========================================
 # 辅助功能：判断字串是否是数字构成的
@@ -365,24 +378,24 @@ def searchSupplierbyTag(tag:str, info):
         return False
     return df_read
 # =========================================
-# 功能：：客戶購買資料表：：新增
+# 功能：：客戶購買資料表：：新增已完成的交易
 # 參數：FAS_name x P_ID x C_ID v FASID v S_name x TotalPurchase x Price v TotalCount v TotalDiscount x
 # OrderDate v !> EstimateDeliveryDate v ≈ ActualDeliveryDate v R_ID x
-def addPurchase(C_ID:str, FASID:int, Price:float, TotalCount:int, OrderDate:str, EstimatedDeliveryDate:str, ActualDeliveryDate: str):
+def addPurchaseFin(C_ID:str, FASID:int, Price:float, TotalCount:int, OrderDate:str, EstimatedDeliveryDate:str, ActualDeliveryDate: str):
 #     判斷id是否合法
     if not(re.match('[a-zA-Z]{1}[0-9]{9}',C_ID) or re.match('[0-9]{8}',C_ID)):
         print("Invalid ID! 需要一位英文字母加九位數字 或者 八碼數字字串")
-        return False
+        return False, "Invalid ID! 需要一位英文字母加九位數字 或者 八碼數字字串"
 #     判斷日期是否符合格式
     if not (is_valid_date(OrderDate) and is_valid_date(EstimatedDeliveryDate) and is_valid_date(ActualDeliveryDate)):
         print("Invalid Date! 日期格式需要%Y-%m-%d")
-        return False
+        return False, "Invalid Date! 日期格式需要%Y-%m-%d"
 #     確認訂購日期與預計交貨日期和實際交貨日期關係
     deltaTimeOrderEstimated = time.mktime(time.strptime(OrderDate,"%Y-%m-%d")) - time.mktime(time.strptime(EstimatedDeliveryDate,"%Y-%m-%d"))
     deltaTimeOrderActual = time.mktime(time.strptime(OrderDate,"%Y-%m-%d")) - time.mktime(time.strptime(ActualDeliveryDate,"%Y-%m-%d"))
     if deltaTimeOrderEstimated > 0 or deltaTimeOrderActual > 0:
         print("「訂購日期」必須在「預計交貨日期」與「實際交貨日期」之前或同一天!!")
-        return False
+        return False, "「訂購日期」必須在「預計交貨日期」與「實際交貨日期」之前或同一天!!"
 #     格式化id
     if re.match('[0-9]{8}',C_ID):
         C_ID = 'C3'+C_ID
@@ -395,7 +408,55 @@ def addPurchase(C_ID:str, FASID:int, Price:float, TotalCount:int, OrderDate:str,
 #     資料不存在報錯，退出
     if len(FASData) == 0 or len(ClientData) == 0:
         print("Data not exist!!")
-        return False
+        return False, "Data not exist!!"
+#     計算交易消耗商品總數
+    count = 0
+#     print(PurchaseData['TotalCount'])
+    for i in PurchaseData['TotalCount']:
+        count = count + i
+    if count + TotalCount > FASData['TotalCount']:
+        print("商品不足，請更改購買數目！當前id:{} ,總數{}".format(C_ID,FASData['TotalCount'] - count))
+        return False, "商品不足，請更改購買數目！當前id:{} ,總數{}".format(C_ID,FASData['TotalCount'] - count)
+#     準備寫入資料                                                                                            
+    df_write = pd.DataFrame({'NotFreezingClient':1,'FAS_name': [FASData['FAS_name'][0]],'C_ID':[C_ID],'FASID':[FASID],'S_name':[FASData['S_name'][0]],'TotalPurchase':[float(Price) * int(TotalCount)],'Price':[Price],'TotalCount':[TotalCount],'TotalDiscount':[float(Price * TotalCount)*float(int(ClientData['C_discount'][0])/100)],'OrderDate':OrderDate,'EstimatedDeliveryDate':EstimatedDeliveryDate,'ActualDeliveryDate':ActualDeliveryDate})
+    try:
+        df_write.to_sql('client_purchase', engine, if_exists="append" ,index=False)
+        return True, "Success"
+    except:
+        print("addEntity failed, please check you parameter or datatype")
+        return False, "addEntity failed, please check you parameter or datatype"
+# =========================================
+# 功能：：客戶購買資料表：：新增刚订单的交易
+# 參數：FAS_name x P_ID x C_ID v FASID v S_name x TotalPurchase x Price v TotalCount v TotalDiscount x
+# OrderDate v !> EstimateDeliveryDate v ≈ ActualDeliveryDate v R_ID x
+def addPurchaseBeing(C_ID:str, FASID:int, Price:float, TotalCount:int, OrderDate:str, EstimatedDeliveryDate:str):
+#     判斷id是否合法
+    if not(re.match('[a-zA-Z]{1}[0-9]{9}',C_ID) or re.match('[0-9]{8}',C_ID)):
+        print("Invalid ID! 需要一位英文字母加九位數字 或者 八碼數字字串")
+        return False,"Invalid ID! 需要一位英文字母加九位數字 或者 八碼數字字串"
+#     判斷日期是否符合格式
+    if not (is_valid_date(OrderDate) and is_valid_date(EstimatedDeliveryDate)):
+        print("Invalid Date! 日期格式需要%Y-%m-%d")
+        return False,"Invalid Date! 日期格式需要%Y-%m-%d"
+#     確認訂購日期與預計交貨日期和實際交貨日期關係
+    deltaTimeOrderEstimated = time.mktime(time.strptime(OrderDate,"%Y-%m-%d")) - time.mktime(time.strptime(EstimatedDeliveryDate,"%Y-%m-%d"))
+    if deltaTimeOrderEstimated > 0 :
+        print("「訂購日期」必須在「預計交貨日期」與「實際交貨日期」之前或同一天!!")
+        return False,"「訂購日期」必須在「預計交貨日期」與「實際交貨日期」之前或同一天!!"
+#     格式化id
+    if re.match('[0-9]{8}',C_ID):
+        C_ID = 'C3'+C_ID
+#     獲取花草苗木資料表
+    FASData = searchFASbyTag('FASID',FASID)
+    print(FASData)
+#     獲取客戶資料表
+    ClientData = searchClientbyTag('C_ID',C_ID)
+#     獲取歷史交易
+    PurchaseData = searchPurchasebyTag('FASID',FASID)
+#     資料不存在報錯，退出
+    if len(FASData) == 0 or len(ClientData) == 0:
+        print("Data not exist!!")
+        return False, "Data not exist!!"
 #     計算交易消耗商品總數
     count = 0
 #     print(PurchaseData['TotalCount'])
@@ -403,15 +464,15 @@ def addPurchase(C_ID:str, FASID:int, Price:float, TotalCount:int, OrderDate:str,
         count = count + i
     if count + TotalCount > FASData['TotalCount'][0]:
         print("商品不足，請更改購買數目！當前id:{} ,總數{}".format(C_ID,FASData['TotalCount'] - count))
-        return False
+        return False, "商品不足，請更改購買數目！當前id:{} ,總數{}".format(C_ID,FASData['TotalCount'] - count)
 #     準備寫入資料                                                                                            
-    df_write = pd.DataFrame({'NotFreezingClient':1,'FAS_name': [FASData['FAS_name'][0]],'C_ID':[C_ID],'FASID':[FASID],'S_name':[FASData['S_name'][0]],'TotalPurchase':[Price * TotalCount],'Price':[Price],'TotalCount':[TotalCount],'TotalDiscount':[(Price * TotalCount)*ClientData['C_discount'][0]/100],'OrderDate':OrderDate,'EstimatedDeliveryDate':EstimatedDeliveryDate,'ActualDeliveryDate':ActualDeliveryDate})
+    df_write = pd.DataFrame({'NotFreezingClient':1,'FAS_name': [FASData['FAS_name'][0]],'C_ID':[C_ID],'FASID':[FASID],'S_name':[FASData['S_name'][0]],'TotalPurchase':[float(Price) * int(TotalCount)],'Price':[Price],'TotalCount':[TotalCount],'TotalDiscount':[float(Price * TotalCount)*float(int(ClientData['C_discount'][0])/100)],'OrderDate':OrderDate,'EstimatedDeliveryDate':EstimatedDeliveryDate})
     try:
         df_write.to_sql('client_purchase', engine, if_exists="append" ,index=False)
-        return True
+        return True, "Success"
     except:
         print("addEntity failed, please check you parameter or datatype")
-        return False
+        return False, "addEntity failed, please check you parameter or datatype"
 # =========================================
 # 功能：：客戶購買資料表：：搜索
 # 參數：搜索標籤 標籤內容
@@ -430,3 +491,26 @@ def searchPurchasebyTag(tag:str,info):
         return False
     return df_read
 # =========================================
+# 功能：：客戶購買資料表：：編輯
+# 參數：ID 日期
+def editPurchaseDate(ID:str, info):
+    data = searchPurchasebyTag('P_ID',ID)
+#     print(data)
+    if len(data)==0:
+        print('Data not exist!!')
+        return False
+    sql_query = 'update client_purchase set ActualDeliveryDate = "{}" where P_ID = "{}";'.format(info, ID)
+#     pd.read_sql_query(sql_query, engine)
+    try:
+        pd.read_sql_query(sql_query, engine)
+    except:
+        print("",end="")
+    return True
+# =========================================
+def readForm(name:str):
+    sql_query = 'select * from '+name+';'
+    df_read = pd.read_sql_query(sql_query, engine)
+    return df_read
+
+#========================================================================================================================================
+
